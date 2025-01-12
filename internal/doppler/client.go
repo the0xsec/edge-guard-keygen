@@ -1,4 +1,3 @@
-// internal/doppler/client.go
 package doppler
 
 import (
@@ -24,24 +23,104 @@ type KeyMetadata struct {
 	Version   int       `json:"version"`
 }
 
+type KeyStatus struct {
+	ID            string    `json:"id"`
+	CreatedTime   time.Time `json:"created_time"`
+	Active        bool      `json:"active"`
+	Version       int       `json:"version"`
+	RotatedTime   time.Time `json:"rotated_time,omitempty"`
+	RotatedFromID string    `json:"rotated_from_id,omitempty"`
+}
+
+type DopplerSecrets struct {
+	Keys   map[string]interface{} `json:"keys,omitempty"`
+	Values map[string]string      `json:"values,omitempty"`
+}
+
+func (c *Client) ListKeys() ([]KeyStatus, error) {
+	// Use --no-file to get raw output instead of writing to file
+	cmd := exec.Command("doppler", "secrets",
+		"download",
+		"--project", c.Project,
+		"--config", c.Config,
+		"--format", "json",
+		"--no-file", // Add this flag
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("failed to download secrets: %w: %s", err, string(output))
+	}
+
+	var secretsMap map[string]string
+	if err := json.Unmarshal(output, &secretsMap); err != nil {
+		return nil, fmt.Errorf("failed to parse secrets: %w", err)
+	}
+
+	var keys []KeyStatus
+	for name, value := range secretsMap {
+
+		if strings.HasPrefix(name, c.KeyPrefix) && strings.HasSuffix(name, "_METADATA") {
+			var status KeyStatus
+			if err := json.Unmarshal([]byte(value), &status); err != nil {
+				fmt.Printf("Warning: Could not parse metadata for %s: %v\n", name, err)
+				continue
+			}
+			keys = append(keys, status)
+		}
+	}
+
+	return keys, nil
+}
+
+func (c *Client) RotateKey(oldKeyID string) error {
+	newKey, err := keyGenerator.GenerateKey(32)
+	if err != nil {
+		return fmt.Errorf("failed to generate a new key: %w", err)
+	}
+
+	if err := newKey.Validate(); err != nil {
+		return fmt.Errorf("failed to validate the new key: %w", err)
+	}
+
+	if err := c.StoreKey(newKey); err != nil {
+		return fmt.Errorf("failed to store new key: %w", err)
+	}
+
+	oldMetaName := fmt.Sprintf("%s_%s_METADATA", c.KeyPrefix, oldKeyID)
+	oldMetadata := KeyStatus{
+		ID:            oldKeyID,
+		Active:        false,
+		RotatedTime:   time.Now(),
+		RotatedFromID: newKey.ID,
+	}
+
+	oldMetadataJSON, err := json.Marshal(oldMetadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal old key metadata: %w", err)
+	}
+
+	if err := c.setSecret(oldMetaName, string(oldMetadataJSON)); err != nil {
+		return fmt.Errorf("failed to update old key metadata: %w", err)
+	}
+	return nil
+}
+
 func InitClient(project, config string) *Client {
 	return &Client{
 		Project:   project,
 		Config:    config,
-		KeyPrefix: "JWT_SIGNING_KEY", // Updated to uppercase
+		KeyPrefix: "JWT_SIGNING_KEY", // Doppler requires the names to be uppercase...
 	}
 }
 
 func (c *Client) StoreKey(keyPair *keyGenerator.KeyPair) error {
-	// Create Doppler-compatible secret names
 	keyName := fmt.Sprintf("%s_%s", c.KeyPrefix, keyPair.ID)
 
-	// Store the key itself
 	if err := c.setSecret(keyName, keyPair.EncodedKey); err != nil {
 		return fmt.Errorf("failed to store key: %w", err)
 	}
 
-	// Store metadata
 	metadata := KeyMetadata{
 		ID:        keyPair.ID,
 		CreatedAt: keyPair.CreatedTime,
