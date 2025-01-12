@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -21,7 +22,8 @@ func GenerateKey(keySize int) (*KeyPair, error) {
 		return nil, fmt.Errorf("failed to generate random key: %w", err)
 	}
 
-	id := fmt.Sprintf("key_%d", time.Now().Unix())
+	id := fmt.Sprintf("KEY_%d", time.Now().Unix())
+	id = strings.ToUpper(id)
 	encodedKey := base64.StdEncoding.EncodeToString(key)
 
 	return &KeyPair{
