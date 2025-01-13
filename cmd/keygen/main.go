@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"time"
 
 	doppler "github.com/the0xsec/edge-guard-keygen/internal/doppler"
 	keyGenerator "github.com/the0xsec/edge-guard-keygen/internal/generator"
@@ -16,6 +17,8 @@ func main() {
 		config  = flag.String("config", "", "Doppler config name")
 		command = flag.String("command", "generate", "Command to execute: generate, list, rotate")
 		keyID   = flag.String("key-id", "", "Key ID for rotation")
+		maxAge  = flag.Duration("max-age", 2160*time.Hour, "max age for inactive keys")
+		dryRun  = flag.Bool("dry-run", true, "Like a TF Plan")
 	)
 
 	flag.Parse()
@@ -44,7 +47,10 @@ func main() {
 		if err := rotateKey(client, *keyID); err != nil {
 			log.Fatalf("Failed to rotate key: %v", err)
 		}
-
+	case "cleanup":
+		if err := cleanupKeys(client, *maxAge, *dryRun); err != nil {
+			log.Fatalf("failed to cleanup keys: %v", err)
+		}
 	default:
 		log.Fatalf("Unknown command: %s", *command)
 	}
@@ -99,5 +105,31 @@ func rotateKey(client *doppler.Client, keyID string) error {
 	}
 
 	fmt.Printf("Successfully rotated key: %s\n", keyID)
+	return nil
+}
+
+func cleanupKeys(client *doppler.Client, maxAge time.Duration, dryRun bool) error {
+	keysToTarget, err := client.CleanupOldKeys(maxAge, dryRun)
+	if err != nil {
+		return fmt.Errorf("cleanup keys operation failed: %w", err)
+	}
+	if len(keysToTarget) == 0 {
+		fmt.Println("No keys found eligible for cleanup")
+		return nil
+	}
+
+	if dryRun {
+		fmt.Println("Going to delete these keys (dry run):")
+	} else {
+		fmt.Println("The following keys were deleted:")
+	}
+
+	for _, keyID := range keysToTarget {
+		fmt.Printf("- %s\n", keyID)
+	}
+
+	if dryRun {
+		fmt.Println("\nTo actually delete these keys, run again with --dry-run=false")
+	}
 	return nil
 }

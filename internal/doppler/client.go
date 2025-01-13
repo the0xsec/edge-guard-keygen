@@ -24,12 +24,14 @@ type KeyMetadata struct {
 }
 
 type KeyStatus struct {
-	ID            string    `json:"id"`
-	CreatedTime   time.Time `json:"created_time"`
-	Active        bool      `json:"active"`
-	Version       int       `json:"version"`
-	RotatedTime   time.Time `json:"rotated_time,omitempty"`
-	RotatedFromID string    `json:"rotated_from_id,omitempty"`
+	ID                string    `json:"id"`
+	CreatedTime       time.Time `json:"created_time"`
+	Active            bool      `json:"active"`
+	Version           int       `json:"version"`
+	RotatedTime       time.Time `json:"rotated_time,omitempty"`
+	RotatedFromID     string    `json:"rotated_from_id,omitempty"`
+	LastUsed          time.Time `json:"last_used,omitempty"`
+	MarkedForDeletion bool      `json:"marked_for_deletion,omitempty"`
 }
 
 type DopplerSecrets struct {
@@ -38,13 +40,13 @@ type DopplerSecrets struct {
 }
 
 func (c *Client) ListKeys() ([]KeyStatus, error) {
-	// Use --no-file to get raw output instead of writing to file
+	// Using --no-file to get raw output instead of writing to file
 	cmd := exec.Command("doppler", "secrets",
 		"download",
 		"--project", c.Project,
 		"--config", c.Config,
 		"--format", "json",
-		"--no-file", // Add this flag
+		"--no-file",
 	)
 
 	output, err := cmd.CombinedOutput()
@@ -178,5 +180,68 @@ func (c *Client) VerifyKeyPlacement(keyID string) error {
 		return fmt.Errorf("key not found in Doppler")
 	}
 
+	return nil
+}
+
+func (c *Client) CleanupOldKeys(maxAge time.Duration, dryRun bool) ([]string, error) {
+	keys, err := c.ListKeys()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list keys: %w", err)
+	}
+	var keyAge time.Duration
+	var keyToDelete []string
+
+	rightNow := time.Now()
+
+	for _, key := range keys {
+		if key.Active {
+			continue
+		}
+
+		switch {
+		case !key.LastUsed.IsZero():
+			keyAge = rightNow.Sub(key.LastUsed)
+		case !key.RotatedTime.IsZero():
+			keyAge = rightNow.Sub(key.RotatedTime)
+		default:
+			keyAge = rightNow.Sub(key.CreatedTime)
+		}
+
+		if keyAge > maxAge {
+			keyToDelete = append(keyToDelete, key.ID)
+		}
+	}
+
+	if dryRun {
+		return keyToDelete, nil
+	}
+
+	for _, keyID := range keyToDelete {
+		keyName := fmt.Sprintf("%s_%s", c.KeyPrefix, keyID)
+		metadataName := fmt.Sprintf("%s_%s_METADATA", c.KeyPrefix, keyID)
+
+		if err := c.deleteSecret(keyName); err != nil {
+			return keyToDelete, fmt.Errorf("failed to delete key %s: %w", keyID, err)
+		}
+
+		if err := c.deleteSecret(metadataName); err != nil {
+			return keyToDelete, fmt.Errorf("failed to delete metadata for key %s: %w", keyID, err)
+		}
+	}
+	return keyToDelete, nil
+}
+
+func (c *Client) deleteSecret(name string) error {
+	cmd := exec.Command("doppler", "secrets", "delete",
+		"delete",
+		name,
+		"--project", c.Project,
+		"--config", c.Config,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to delete secret %s: %w: %s", name, err, string(output))
+	}
 	return nil
 }
